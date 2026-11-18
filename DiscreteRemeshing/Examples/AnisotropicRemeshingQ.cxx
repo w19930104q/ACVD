@@ -228,7 +228,10 @@ int main( int argc, char *argv[] )
 
 	Remesh->SetDisplay(Display);
 	Remesh->Remesh();
-	
+
+	// Canonical renumbering as the very last stage before writing.
+	Remesh->FinalizeOutput();
+
 	// save the output mesh to .ply format
 	char REALFILE[500];
 	if (OutputDirectory)

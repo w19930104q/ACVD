@@ -45,6 +45,8 @@
 #include "vtkSurfaceClustering.h"
 #include "vtkCurvatureMeasure.h"
 #include "vtkTag.h"
+#include "vtkBoundaryConstraint.h"
+#include "vtkMeshCanonicalizer.h"
 
 using std::cin;
 
@@ -63,6 +65,14 @@ template < class Metric > class vtkDiscreteRemeshing:public vtkSurfaceClustering
 	// process the remeshing
 	virtual void Remesh();
 
+	/// Canonical finalization step. Must be invoked AFTER any external vertex
+	/// relocation (e.g. the quadric post-processing in the ACVD examples) and
+	/// BEFORE writing the mesh. It is intentionally not part of Remesh(): the
+	/// quadric stage indexes output vertices by their cluster id, and the
+	/// canonical renumbering reorders those ids, so running it earlier would
+	/// make the quadric stage write each optimum onto the wrong vertex.
+	virtual void FinalizeOutput();
+
 	/// for debugging: sets on/off the capability to skip the curvature computation and/or the clustering
 	vtkSetMacro( FileLoadSaveOption, int )
 
@@ -75,6 +85,21 @@ template < class Metric > class vtkDiscreteRemeshing:public vtkSurfaceClustering
 
 	/// Sets On/Off the fix for meshes with boundaries. Default value: 1 (On)
 	vtkSetMacro( BoundaryFixing, int )
+
+	/// Enables/disables protection of hole boundaries, sharp creases and
+	/// color discontinuities during the clustering. Default: 1 (On).
+	vtkSetMacro( FeatureProtection, int )
+	vtkGetMacro( FeatureProtection, int )
+
+	/// Sets the sharp edge threshold in degrees (used when
+	/// FeatureProtection is enabled). Default: 40 degrees.
+	vtkSetMacro( SharpAngleThreshold, double )
+	vtkGetMacro( SharpAngleThreshold, double )
+
+	/// Enables/disables the deterministic canonical renumbering of the
+	/// output mesh. Default: 1 (On).
+	vtkSetMacro( CanonicalOutput, int )
+	vtkGetMacro( CanonicalOutput, int )
 
 	vtkSetMacro( ForceManifold, bool )
 	vtkSetMacro( InputDensityFile, char* )
@@ -95,6 +120,14 @@ protected:
 
 	/// Adds polygons and vertices to fix boundaries
 	bool FixMeshBoundaries ();
+
+	/// Detects boundary/sharp/color-constrained vertices and registers them
+	/// as fixed clusters so they survive the clustering.
+	void ApplyFeatureProtection ();
+
+	/// Replaces the output mesh by a canonically renumbered copy (invoked by
+	/// FinalizeOutput()).
+	void RenumberOutput ();
 
 	/// Experimental...
 	void FixClusteringToVoronoi ();
@@ -151,6 +184,22 @@ protected:
 
 	// flag to enable addition of polygons and points to fix the mesh boundaries
 	int BoundaryFixing;
+
+	// flag to enable protection of hole boundaries, sharp edges and color
+	// discontinuities during the clustering
+	int FeatureProtection;
+
+	// sharp edge threshold (degrees) used by feature protection
+	double SharpAngleThreshold;
+
+	// Maximum fraction of the requested cluster count that may be consumed by
+	// anchored feature/boundary constraints. Keeps the output vertex count
+	// close to the user request and leaves ordinary clusters for the energy
+	// minimization. 0.35 means at most 35% of clusters are fixed anchors.
+	double FeatureBudgetFraction;
+
+	// flag to enable deterministic canonical renumbering of the output
+	int CanonicalOutput;
 
 	// name of custom imageData file giving user-defined density info
 	char* InputDensityFile;
@@ -885,6 +934,12 @@ template < class Metric > void vtkDiscreteRemeshing < Metric >::Remesh ()
 			<< " vertices	and	" << this->GetInput ()->GetNumberOfCells()
 			<< " faces" << endl;
 
+	// Stage 1 (pre-processing): lock boundary/feature/color vertices so the
+	// clustering cannot collapse them. This never runs for the face-based
+	// clustering, whose fixed-cluster machinery is vertex-specific.
+	if ( this->FeatureProtection )
+		this->ApplyFeatureProtection ();
+
 	if ( this->FileLoadSaveOption ) {
 
 		cout << "Do you want to compute the clustering? (0:NO	1:Yes) ";
@@ -951,7 +1006,94 @@ template < class Metric > void vtkDiscreteRemeshing < Metric >::Remesh ()
 
 	if ( this->FixMeshBoundaries() && this->ConsoleOutput ) this->Output->DisplayMeshProperties();
 
+	// Note: the canonical renumbering is deliberately NOT done here. The ACVD
+	// examples run a quadric-based vertex relocation after Remesh() that
+	// indexes output vertices by their cluster id; renumbering first would
+	// scramble that mapping. Call FinalizeOutput() once all relocation is done.
+
 }
+
+template < class Metric >
+void vtkDiscreteRemeshing < Metric >::ApplyFeatureProtection ()
+{
+	// Fixed clusters are only meaningful for vertex-based clustering.
+	if ( this->ClusteringType == 0 ) {
+		if ( this->ConsoleOutput )
+			cout << "Feature protection skipped for face-based clustering"
+				<< endl;
+		return;
+	}
+
+	vtkBoundaryConstraint::Options options;
+	options.protectTopologicalBoundaries = true;
+	options.protectSharpEdges = true;
+	options.protectColorBoundaries = true;
+	options.sharpAngleDegrees = this->SharpAngleThreshold;
+
+	std::vector<unsigned char> priorities;
+	vtkIdList *allConstraints =
+		vtkBoundaryConstraint::DetectConstrainedVertices(
+			this->Input, options, priorities);
+
+	const int detectedConstraints = allConstraints->GetNumberOfIds();
+	if ( detectedConstraints == 0 ) {
+		if ( this->ConsoleOutput )
+			cout << "No boundary/feature vertex to protect" << endl;
+		allConstraints->Delete();
+		return;
+	}
+
+	// Cap the constraint budget so protected vertices never crowd out the
+	// ordinary clusters: at most FeatureBudgetFraction of the requested count
+	// is anchored, leaving the rest free for the energy minimization. This
+	// keeps the output vertex count close to the user request instead of
+	// inflating it to the number of sharp edges.
+	const vtkIdType budget =
+		static_cast<vtkIdType>( this->NumberOfClusters * FeatureBudgetFraction );
+	vtkIdList *constrained =
+		vtkBoundaryConstraint::SelectWithinBudget(
+			this->Input, allConstraints, priorities, budget );
+	allConstraints->Delete();
+
+	const int numberOfConstraints = constrained->GetNumberOfIds();
+	const int targetClusters = this->NumberOfClusters;
+
+	if ( this->ConsoleOutput )
+		cout << "Protecting " << numberOfConstraints << " of "
+			<< detectedConstraints
+			<< " boundary/feature vertices (budget " << budget << " of "
+			<< targetClusters << " clusters)" << endl;
+
+	// SetFixedClusters takes ownership (it registers the list), so deleting
+	// the local reference here leaves exactly one reference held by the
+	// clusterer and avoids a dangling pointer.
+	this->SetFixedClusters( constrained );
+	this->SetNumberOfClusters( targetClusters );
+	constrained->Delete();
+}
+
+template < class Metric >
+void vtkDiscreteRemeshing < Metric >::FinalizeOutput ()
+{
+	if ( this->CanonicalOutput )
+		this->RenumberOutput ();
+}
+
+template < class Metric >
+void vtkDiscreteRemeshing < Metric >::RenumberOutput ()
+{
+	if ( this->Output == 0 ) return;
+
+	vtkSurface *canonical = vtkMeshCanonicalizer::Canonicalize( this->Output );
+	this->Output->Delete();
+	this->Output = canonical;
+
+	if ( this->ConsoleOutput ) {
+		cout << "Canonical output renumbering:" << endl;
+		this->Output->DisplayMeshProperties();
+	}
+}
+
 template < class Metric >
 void vtkDiscreteRemeshing <Metric >::GetDualItemNeighbourClusters ( vtkIdType item,vtkIdList * List ) {
 
@@ -1032,6 +1174,21 @@ void vtkDiscreteRemeshing < Metric >::BuildDelaunayTriangulation () {
 
 		this->Output->AddVertex ( P[ 0 ], P[ 1 ], P[ 2 ] );
 
+	}
+
+	// Snap anchored (fixed) clusters back onto their source vertex so that
+	// protected hole borders and sharp creases are not smoothed away by the
+	// weighted centroid. FixedClusters ids match the first cluster ids.
+	if ( this->FixedClusters && this->ClusteringType == 1 ) {
+		for ( int i = 0; i < this->FixedClusters->GetNumberOfIds(); i++ ) {
+			vtkIdType sourceVertex = this->FixedClusters->GetId( i );
+			if ( sourceVertex < 0 ||
+				sourceVertex >= this->Input->GetNumberOfPoints() )
+				continue;
+			double anchor[3];
+			this->Input->GetPointCoordinates( sourceVertex, anchor );
+			this->Output->SetPointCoordinates( i, anchor );
+		}
 	}
 
 	for ( int i = 0; i < this->GetNumberOfDualItems (); i++ ) {
@@ -1191,6 +1348,10 @@ vtkDiscreteRemeshing < Metric >::vtkDiscreteRemeshing () {
 
 	this->BoundaryFixing = 0;
 	this->EdgeOptimization = 0;
+	this->FeatureProtection = 1;
+	this->SharpAngleThreshold = 40.0;
+	this->FeatureBudgetFraction = 0.35;
+	this->CanonicalOutput = 1;
 	this->AnchorRenderWindow = 0;
 	this->FileLoadSaveOption = 0;
 	this->OriginalInput = 0;

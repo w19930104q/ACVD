@@ -70,6 +70,13 @@ public:
 
 	vtkSetMacro( MinimizeUsingEnergy, bool );
 
+	/// Compatibility entry point with the threaded clusterer.
+	/// The sequential clusterer is deterministic by construction, so this
+	/// flag only records the user's preference and always keeps the
+	/// deterministic behavior.
+	virtual void SetDeterministicMode( int ) {}
+	virtual int GetDeterministicMode() { return 1; }
+
 	/// Main class call: processes the clustering. List is the list of items to cluster. If you want to process
 	/// all the items (which is the case in 99.99% of the cases), leave this parameter empty
 	vtkIntArray *ProcessClustering(vtkIdList *List=0);
@@ -131,7 +138,16 @@ public:
 	/// Returns the number of items inside a cluster
 	int GetClusterSize(int Cluster){ return (this->ClustersSizes->GetValue(Cluster));};
 
-	vtkSetMacro( FixedClusters, vtkIdList* );
+	/// Takes ownership of @p fixedClusters: the list is registered so the
+	/// clusterer holds a reference (released in the destructor), independent
+	/// of the caller's own reference. Passing 0 clears any previous list.
+	void SetFixedClusters( vtkIdList *fixedClusters )
+	{
+		if ( this->FixedClusters == fixedClusters ) return;
+		if ( fixedClusters ) fixedClusters->Register( this );
+		if ( this->FixedClusters ) this->FixedClusters->Delete();
+		this->FixedClusters = fixedClusters;
+	}
 
 protected:
 
@@ -1438,6 +1454,11 @@ vtkUniformClustering<Metric,EdgeType>::~vtkUniformClustering()
 
 	while (this->EdgeQueue.size())
 		this->EdgeQueue.pop();
+
+	// FixedClusters is registered by the remesher when ownership is
+	// transferred, so release it here to balance that reference.
+	if (this->FixedClusters)
+		this->FixedClusters->Delete();
 
 	this->EdgeList->Delete();
 }

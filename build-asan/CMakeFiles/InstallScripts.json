@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/liiing/feedback/uid21740/build-asan/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/Common/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/Common/Examples/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/DiscreteRemeshing/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/DiscreteRemeshing/Examples/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/VolumeProcessing/cmake_install.cmake",
+		"/home/liiing/feedback/uid21740/build-asan/VolumeProcessing/Examples/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

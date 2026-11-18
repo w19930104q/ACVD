@@ -114,8 +114,12 @@ int main( int argc, char *argv[] ) {
 		cout<<"-cmax value : set maximum custom indicator value"<<endl;
 		cout<<"-cf value : set custom indicator multiplication factor"<<endl;
 		cout<<"-m 0/1 : enforce a manifold output ON/OFF (default : 0)"<<endl;
+		cout<<"-det 0/1 : deterministic clustering + canonical output numbering ON/OFF (default : 1)"<<endl;
+		cout<<"-fp 0/1 : protect hole boundaries, sharp creases and color borders (default : 1)"<<endl;
+		cout<<"-sa angle : sharp edge threshold in degrees for feature protection (default : 40)"<<endl;
 #ifdef DOmultithread
 		cout<<"-np number : set the number of threads (default : number of cores)"<<endl;
+		cout<<"             note: -np is ignored when -det 1 (the default)"<<endl;
 #endif
 		return 0;
 
@@ -243,6 +247,22 @@ int main( int argc, char *argv[] ) {
 			cout << "Setting boundary fixing to : " << value << endl;
 			remesh->SetBoundaryFixing( atoi( value ) );
 
+		} else if ( strcmp( key, "-det" ) == 0 ) {
+
+			cout << "Setting deterministic mode to : " << value << endl;
+			remesh->SetDeterministicMode( atoi( value ) );
+			remesh->SetCanonicalOutput( atoi( value ) );
+
+		} else if ( strcmp( key, "-fp" ) == 0 ) {
+
+			cout << "Setting feature protection to : " << value << endl;
+			remesh->SetFeatureProtection( atoi( value ) );
+
+		} else if ( strcmp( key, "-sa" ) == 0 ) {
+
+			cout << "Setting sharp edge threshold to : " << value << " degrees" << endl;
+			remesh->SetSharpAngleThreshold( atof( value ) );
+
 		} else if ( strcmp( key, "-fv" ) == 0 ) {
 
 			std::ifstream input;
@@ -361,9 +381,14 @@ int main( int argc, char *argv[] ) {
 		}
 
 		cout << "Constraints on vertices have been checked" << endl;
-		fixedVertices->Delete();
+		// Ownership was transferred to the remesher through SetFixedClusters
+		// (it registers the list), so it must not be deleted here.
 
 	}
+
+	// Canonical renumbering as the very last stage before writing, so the
+	// emitted vertex/face numbering is byte-stable across runs.
+	remesh->FinalizeOutput();
 
 	// save the output mesh to .ply format
 	std::string realFile;

@@ -68,6 +68,16 @@ public:
 		return (this->NumberOfThreads);
 	};
 
+	/// Enables/disables the deterministic clustering path.
+	/// When enabled, the multithreaded edge layout and thread pool are
+	/// bypassed and the sequential vtkUniformClustering algorithm is used.
+	/// The sequential path processes edges and items in fixed index order,
+	/// so the resulting clustering (and therefore the output mesh, once
+	/// canonically renumbered) is byte-identical between runs.
+	/// Default: 1 (determinism is the preferred behavior).
+	vtkSetMacro( DeterministicMode, int );
+	vtkGetMacro( DeterministicMode, int );
+
 	/// sets the pooling ratio (the number of pool jobs will be equal to NumberOfThreads*PoolingRatio+1
 	/// default value : 5
 	void SetPoolingRatio (int Ratio)
@@ -77,6 +87,12 @@ public:
 
 	virtual vtkIntArray *ProcessClustering(vtkIdList *List=0)
 	{
+		if (this->DeterministicMode)
+		{
+			// Sequential, index-ordered pipeline: identical inputs always
+			// produce the identical clustering. See vtkUniformClustering.
+			return this->vtkUniformClustering<Metric>::ProcessClustering(List);
+		}
 		this->vtkUniformClustering<Metric>::ProcessClustering();
 		int NumberOfLockingCollisions=0;
 		for (int i=0;i<this->NumberOfThreads+1;i++)
@@ -151,6 +167,9 @@ protected:
 	/// The method used to compute the edges layout
 	int EdgesLayoutComputingType;
 
+	/// When non-zero, the sequential deterministic clustering is used
+	int DeterministicMode;
+
 	/// The main funcion : processes one loop on the boundary edges
 	virtual int ProcessOneLoop();
 
@@ -205,6 +224,12 @@ protected:
 
 template < class Metric > void vtkThreadedClustering < Metric >::FillQueuesFromClustering ()
 {
+	if (this->DeterministicMode)
+	{
+		this->vtkUniformClustering<Metric>::FillQueuesFromClustering();
+		return;
+	}
+
 	int i, j;
 	vtkIdType I1, I2;
 	std::queue < int >*PQueue;
@@ -664,6 +689,11 @@ template < class Metric > void
 template < class Metric >
 int	vtkThreadedClustering < Metric >::ProcessOneLoop ()
 {
+	if (this->DeterministicMode)
+	{
+		// Fixed index-order edge processing from the sequential clusterer.
+		return this->vtkUniformClustering<Metric>::ProcessOneLoop();
+	}
 
 #ifdef THREADSAFECLUSTERING
 	if ( this->ClustersLocks.size() != ( this->NumberOfClusters+1 ) )
@@ -766,6 +796,12 @@ template < class Metric > void vtkThreadedClustering < Metric >::DisplayThreadsT
 
 template < class Metric > void vtkThreadedClustering < Metric >::SwapQueues ()
 {
+	if (this->DeterministicMode)
+	{
+		// Sequential path uses the single EdgeQueue from the base class.
+		this->vtkUniformClustering<Metric>::SwapQueues();
+		return;
+	}
 	std::queue < int >** Temp=this->ProcessesPopQueues;
 	this->ProcessesPopQueues=this->ProcessesPushQueues;
 	this->ProcessesPushQueues=Temp;
@@ -774,6 +810,14 @@ template < class Metric > void vtkThreadedClustering < Metric >::SwapQueues ()
 
 template < class Metric > void vtkThreadedClustering < Metric >::Init ()
 {
+	if (this->DeterministicMode)
+	{
+		// Sequential path: only the base class arrays are needed. The edge
+		// layout and thread pool queues are never touched in this mode.
+		this->vtkUniformClustering < Metric >::Init ();
+		return;
+	}
+
 	vtkUniformClustering < Metric >::Init ();
 	int i;
 
@@ -994,6 +1038,10 @@ template < class Metric >
 {
 	this->EdgesLayoutComputingType = 1;
 	this->DisplayThreadsTimingsFlag = 0;
+
+	// Deterministic by default: reproducible output takes priority over the
+	// non-deterministic speed-up of the thread pool.
+	this->DeterministicMode = 1;
 
 	this->Timer = vtkTimerLog::New ();
 

@@ -74,7 +74,10 @@ Executables will be placed in `build/bin/` (or `bin/`).
 - `-of <filename>`: Custom output filename (default: `simplification.ply`).
 - `-b <0|1>`: Boundary vertex fixing (`1` = fixed, `0` = free).
 - `-q <0|1|2|3>`: Quadric optimization level (default: `3`).
-- `-np <n_threads>`: Set number of OpenMP threads for parallel executables (`ACVDP`, `ACVDQP`).
+- `-np <n_threads>`: Set number of OpenMP threads for parallel executables (`ACVDP`, `ACVDQP`). Ignored when deterministic mode is on (the default), which always uses the sequential clustering path.
+- `-det <0|1>`: Deterministic mode (default: `1`). Routes the clustering through the sequential, order-independent path and applies a canonical geometry-based renumbering of the output vertices and faces, so two runs (even across `ACVD`/`ACVDP` or different thread counts) emit byte-identical PLY files. Set `-det 0` to restore the legacy timing-driven thread-pool behavior.
+- `-fp <0|1>`: Feature protection (default: `1`). Before clustering, anchors hole borders, sharp creases (dihedral angle above the `-sa` threshold) and scalar/color discontinuities as fixed clusters so they survive the simplification. Constrained vertices are capped to a fraction of the requested cluster count (35%) to keep the output vertex count close to `<n_vertices>`. Set `-fp 0` to disable.
+- `-sa <degrees>`: Sharp-edge threshold in degrees used by feature protection (default: `40`). Edges whose face dihedral angle is at or above this value are treated as sharp creases.
 
 ---
 
@@ -99,6 +102,33 @@ ACVD works by clustering input mesh vertices. Output quality depends on two key 
 1. **Subsampling Ratio (`-s ratio`)**: Controls the ratio of intermediate samples to output vertices. Defaults to `10`. Increasing to `-s 100` improves sampling accuracy and output triangle quality.
 2. **Edge Splitting Ratio (`-l ratio`)**: Pre-splits input edges longer than ratio X average edge length. Use `-l 3` to eliminate long, thin triangles in input models.
 3. **Manifold Enforcement (`-m 1`)**: Guarantees that the output mesh is topologically 2-manifold (no self-intersections or non-manifold edges).
+
+---
+
+## 5b. Deterministic Pipeline: Three Independent Stages
+
+When deterministic mode is enabled (the default), remeshing is split into three
+decoupled stages, each in its own translation unit:
+
+1. **Clustering** — `vtkThreadedClustering` / `vtkUniformClustering`. The
+   parallel clusterer's timing-driven thread pool (whose scheduling depended on
+   measured wall-clock time) is bypassed in favor of the sequential, fixed-order
+   Lloyd path, so the cluster assignment is a pure function of the input.
+2. **Boundary / feature protection** — `vtkBoundaryConstraint.h` (pre-stage) and
+   `FixMeshBoundaries()`. Constrained vertices (hole borders, sharp creases,
+   color/scalar discontinuities) are detected in fixed index order and anchored
+   as fixed clusters before the energy minimization. The anchor count is capped
+   by a budget so the output vertex count stays close to the request.
+3. **Output renumbering** — `vtkMeshCanonicalizer.h`, invoked through
+   `FinalizeOutput()` as the very last step before writing. Vertices are sorted
+   by quantized coordinates and faces by their canonical, orientation-normalized
+   id triples, making the emitted numbering independent of internal cluster ids
+   and face discovery order. It runs after any quadric vertex relocation (which
+   indexes vertices by cluster id), so renumbering can never scramble that
+   mapping.
+
+The CLI and the VTK file output (`vtkPLYWriter` / `WriteToFile`) are unchanged;
+the new behavior is controlled only by the `-det`, `-fp` and `-sa` flags.
 
 ---
 

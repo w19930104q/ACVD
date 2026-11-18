@@ -95,8 +95,12 @@ int main( int argc, char *argv[] )
 		cout << "-cmax value : set maximum custom indicator value" << endl;
 		cout << "-cf value : set custom indicator multiplication factor" << endl;
 		cout << "-m 0/1 : enforce a manifold output ON/OFF (default : 0)" << endl;
+		cout << "-det 0/1 : deterministic clustering + canonical output numbering ON/OFF (default : 1)" << endl;
+		cout << "-fp 0/1 : protect hole boundaries, sharp creases and color borders (default : 1)" << endl;
+		cout << "-sa angle : sharp edge threshold in degrees for feature protection (default : 40)" << endl;
 #ifdef DOmultithread
 		cout<<"-np number : set the number of threads (default : number of cores)"<<endl;
+		cout<<"             note: -np is ignored when -det 1 (the default)"<<endl;
 #endif
 		return (0);
 	}
@@ -187,6 +191,22 @@ int main( int argc, char *argv[] )
 		if (strcmp(key, "-b") == 0) {
 			cout << "Setting boundary fixing to : " << value << endl;
 			Remesh->SetBoundaryFixing(atoi(value));
+		}
+
+		if (strcmp(key, "-det") == 0) {
+			cout << "Setting deterministic mode to : " << value << endl;
+			Remesh->SetDeterministicMode(atoi(value));
+			Remesh->SetCanonicalOutput(atoi(value));
+		}
+
+		if (strcmp(key, "-fp") == 0) {
+			cout << "Setting feature protection to : " << value << endl;
+			Remesh->SetFeatureProtection(atoi(value));
+		}
+
+		if (strcmp(key, "-sa") == 0) {
+			cout << "Setting sharp edge threshold to : " << value << " degrees" << endl;
+			Remesh->SetSharpAngleThreshold(atof(value));
 		}
 		ArgumentsIndex += 2;
 	}
@@ -289,6 +309,11 @@ int main( int argc, char *argv[] )
 			OptimizedMeshWindow->Interact ();
 		}
 	}
+
+	// Canonical renumbering is the very last stage: it must run after the
+	// quadric vertex relocation above (which indexes vertices by cluster id)
+	// and before writing the file, so the emitted numbering is byte-stable.
+	Remesh->FinalizeOutput();
 
 	// save the output mesh to .ply format
 	char REALFILE[500];
